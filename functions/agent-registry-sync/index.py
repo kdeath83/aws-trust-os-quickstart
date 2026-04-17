@@ -29,9 +29,13 @@ try:
     from gremlin_python.process.graph_traversal import __
     from gremlin_python.process.strategies import *
     GREMLIN_AVAILABLE = True
-except ImportError:
-    GREMLIN_AVAILABLE = False
-    print("Gremlin not available - Neptune features disabled")
+except ImportError as e:
+    # CRITICAL FIX: Changed from silent print to critical error
+    # Gremlin is required for core functionality - fail fast if unavailable
+    import sys
+    print(f"CRITICAL ERROR: Gremlin Python driver is required but not available: {e}")
+    print("Ensure gremlinpython is included in Lambda Layer or deployment package")
+    sys.exit(1)  # Fail fast - don't silently continue with broken functionality
 
 
 def lambda_handler(event, context):
@@ -479,6 +483,18 @@ def get_asset_lineage(asset_id: str) -> Dict:
         # Get relationships
         in_edges = g.V().has('asset', 'id', asset_id).inE().outV().valueMap(True).toList()
         out_edges = g.V().has('asset', 'id', asset_id).outE().inV().valueMap(True).toList()
+        
+        remote_conn.close()
+        
+        return {
+            'asset': asset,
+            'accessed_by': in_edges,
+            'related_to': out_edges
+        }
+        
+    except Exception as e:
+        print(f"Error getting asset lineage: {e}")
+        return {}has('asset', 'id', asset_id).outE().inV().valueMap(True).toList()
         
         remote_conn.close()
         

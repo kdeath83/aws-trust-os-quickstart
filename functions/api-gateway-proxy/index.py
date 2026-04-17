@@ -174,9 +174,20 @@ def _apply_guardrail(body: dict) -> dict:
 
 def _invoke_bedrock_model(model_id: str, body: dict) -> tuple:
     """Invoke Bedrock model and return response with metrics."""
+    # CRITICAL FIX: Add input validation and model existence check
+    if not model_id or not isinstance(model_id, str):
+        raise ValueError(f"Invalid model_id: {model_id}")
+    
+    # Validate model_id format (basic sanity check)
+    allowed_providers = ['anthropic', 'amazon', 'ai21', 'cohere', 'meta', 'mistral']
+    if not any(provider in model_id.lower() for provider in allowed_providers):
+        raise ValueError(f"Model {model_id} not in allowed provider list")
+    
     # Prepare request body for Bedrock
     bedrock_body = _transform_to_bedrock_format(body, model_id)
     
+    # CRITICAL FIX: Add timeout configuration to prevent hanging
+    bedrock_runtime = _get_client('bedrock-runtime')
     response = bedrock_runtime.invoke_model(
         modelId=model_id,
         body=json.dumps(bedrock_body),

@@ -170,11 +170,35 @@ def _process_review_decision(event):
             }
         )
         
-        # Signal Step Functions if we have execution context
-        execution_id = review.get('execution_id')
-        if execution_id:
-            # Note: In real implementation, you'd use task tokens
-            pass
+        # CRITICAL FIX: Implement actual Step Functions task token signaling
+        task_token = review.get('task_token')  # Token stored when task created
+        if task_token:
+            try:
+                if decision == 'APPROVE':
+                    stepfunctions.send_task_success(
+                        taskToken=task_token,
+                        output=json.dumps({
+                            'decision': 'APPROVE',
+                            'review_id': review_id,
+                            'reviewed_at': reviewed_at,
+                            'comments': reviewer_comments
+                        })
+                    )
+                elif decision in ['REJECT', 'MODIFY']:
+                    stepfunctions.send_task_failure(
+                        taskToken=task_token,
+                        error='ReviewDecision',
+                        cause=json.dumps({
+                            'decision': decision,
+                            'review_id': review_id,
+                            'comments': reviewer_comments,
+                            'reviewed_at': reviewed_at
+                        })
+                    )
+            except Exception as e:
+                # Log error but don't fail the API response
+                print(f"Failed to signal Step Functions: {e}")
+                # Continue - the review is still recorded in DynamoDB
         
         # Send notification
         if SNS_TOPIC_ARN:

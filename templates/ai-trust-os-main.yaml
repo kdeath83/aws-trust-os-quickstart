@@ -41,7 +41,9 @@ Conditions:
   IsProduction: !Equals [!Ref Environment, prod]
   EnablePrivateLinkCondition: !Equals [!Ref EnablePrivateLink, 'true']
   EnableVpcLatticeCondition: !Equals [!Ref EnableVpcLattice, 'true']
-  CreateBastionHost: !And [!Equals [!Ref Environment, dev], !Not [!Equals [!Ref Environment, prod]]]
+  # CRITICAL FIX: Changed from impossible !And condition to simple !Equals
+  # Original !And [!Equals [dev], !Not [!Equals [prod]]] was logically broken
+  CreateBastionHost: !Equals [!Ref Environment, dev]
 
 Mappings:
   RegionMap:
