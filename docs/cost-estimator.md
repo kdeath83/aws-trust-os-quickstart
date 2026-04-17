@@ -1,5 +1,13 @@
 # AI Trust OS - Cost Estimator
 
+> 🚨 **DISCLAIMER: NON-OFFICIAL, ILLUSTRATIVE PURPOSES ONLY**
+> 
+> **This is NOT official AWS pricing guidance.** All figures are estimates for **prototyping and planning purposes only**. 
+> - Prices are based on AWS us-east-1 as of January 2024 and are **subject to change without notice**
+> - Actual costs depend on your specific usage patterns, reserved capacity, negotiated rates, and regional pricing
+> - Always use the [AWS Pricing Calculator](https://calculator.aws/) for official estimates
+> - This document is a **community contribution** — not affiliated with or endorsed by AWS
+
 > ⚠️ **IMPORTANT: These are baseline (unoptimized) costs.** 
 > 
 > The scenarios below show what AI Trust OS costs **without any optimizations**. 
@@ -372,7 +380,89 @@ if __name__ == "__main__":
     print(f"  - Infrastructure: ${costs['infrastructure']:,.2f}")
 ```
 
+## Ultra-Cheap Tier (Non-Bedrock Models)
+
+> 🚨 **WARNING: NOT FOR PRODUCTION WITHOUT SECURITY REVIEW**
+> 
+> The models below are **significantly cheaper** than Bedrock options but require:
+> - Direct API integration with non-AWS providers
+> - Data leaving the AWS network (no PrivateLink)
+> - Additional vendor security/compliance audits
+> - Separate monitoring, rate limiting, and error handling
+> 
+> **Use for:** Prototyping, low-risk classification tasks, cost-sensitive dev environments
+> **Avoid for:** Production with PII, regulated industries, high-security workloads
+
+### Cheapest Models for Simple Tasks
+
+| Model | Provider | Input | Output | Blended* | vs Claude Haiku | Risk Level |
+|-------|----------|-------|--------|----------|-----------------|------------|
+| **Gemini 2.5 Flash-Lite** | Google | **$0.10/M** | ~$0.30/M | **~$0.25/M** | **83% cheaper** | ⚠️ External API |
+| **GPT-4o mini** | OpenAI | $0.15/M | $0.60/M | ~$0.375/M | **75% cheaper** | ⚠️ External API |
+| **Llama 3.1 8B** | Fireworks | $0.20/M | $0.20/M | ~$0.40/M | **73% cheaper** | ⚠️ External API |
+| **Claude 3 Haiku** | Bedrock | $0.25/M | $1.25/M | $1.50/M | Baseline | ✅ AWS Native |
+
+*Blended = (1M input + 0.5M output), typical for classification/simple tasks
+
+### Ultra-Cheap Tier Configuration
+
+```json
+{
+  "_comment": "⚠️ NON-BEDROCK: Use for prototyping only. Requires security review for production.",
+  "ultra_cheap_tier": {
+    "enabled": false,
+    "warning": "Data leaves AWS network. Review security/compliance requirements.",
+    "models": {
+      "primary": {
+        "id": "gemini-2.5-flash-lite",
+        "provider": "google",
+        "cost_per_1m": 0.25,
+        "use_for": ["classification", "summarization", "sentiment"],
+        "complexity_threshold": 0.2
+      },
+      "fallback": {
+        "id": "gpt-4o-mini",
+        "provider": "openai",
+        "cost_per_1m": 0.375,
+        "use_for": ["classification", "sentiment", "entity_extraction"],
+        "complexity_threshold": 0.3
+      }
+    },
+    "routing": {
+      "complexity_score": "rule-based",
+      "fallback_on_error": "claude-3-haiku"
+    }
+  }
+}
+```
+
+### Ultra-Cheap vs Optimized Bedrock Costs
+
+| Scenario | Bedrock Optimized | Ultra-Cheap Tier | **Extra Savings** | Cumulative |
+|----------|-------------------|------------------|-------------------|------------|
+| **Dev (10K/day)** | $75/mo | **$35/mo** | **$40 (53%)** | 92% vs baseline |
+| **Small Prod (100K/day)** | $1,800/mo | **$650/mo** | **$1,150 (64%)** | 95% vs baseline |
+| **Large Prod (1M/day)** | $28,000/mo | **$10,000/mo** | **$18,000 (64%)** | 93% vs baseline |
+
+### Trade-off Checklist
+
+Before enabling ultra-cheap tier, verify:
+
+- [ ] **Security review complete** — data classification, PII handling approved
+- [ ] **Compliance sign-off** — SOC2, ISO 27001, GDPR, CCPA requirements met
+- [ ] **Vendor contracts** — Google/OpenAI/Fireworks agreements signed
+- [ ] **Rate limits tested** — fallback to Bedrock on provider throttling
+- [ ] **Monitoring in place** — separate dashboards for non-Bedrock providers
+- [ ] **Error handling** — graceful degradation when external APIs fail
+- [ ] **Cost tracking** — separate billing/usage tracking per provider
+
+> 🚨 **PROCEED WITH CAUTION:** The 90%+ savings look attractive but come with operational complexity. For most production use cases, the [optimized Bedrock configuration](#cost-optimized-scenarios) at 80% savings is the safer choice.
+
+---
+
 ## Cost Optimized Scenarios
+
+> 🚨 **DISCLAIMER:** All figures below are **estimates for planning purposes only**. Actual AWS pricing varies by region, reserved capacity, and usage patterns. Always verify with [AWS Pricing Calculator](https://calculator.aws/).
 
 The following scenarios use the [cost-optimized.json](../config/cost-optimized.json) configuration with all optimizations enabled.
 
@@ -475,7 +565,15 @@ The following scenarios use the [cost-optimized.json](../config/cost-optimized.j
 | Small Prod | 100K | **$1,800-2,500** | $0.60-0.83 | **79-85%** |
 | Large Prod | 1M | **$28,000-35,000** | $0.93-1.17 | **76-81%** |
 
-**Note:** Actual costs will vary based on:
+> 🚨 **FINAL DISCLAIMER:** All figures in this document are **estimates for illustrative and planning purposes only**. 
+> 
+> - **NOT official AWS pricing guidance**
+> - Prices based on AWS us-east-1 as of January 2024 — **subject to change without notice**
+> - Always verify with [AWS Pricing Calculator](https://calculator.aws/) before making financial commitments
+> - This is a **community contribution** — not affiliated with or endorsed by Amazon Web Services
+> - Actual costs will vary based on your specific usage patterns, negotiated rates, and regional pricing
+
+**Note:** Cost factors that will affect your actual bill:
 - Token counts per request
 - Chosen models
 - Data transfer volumes
