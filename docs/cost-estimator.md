@@ -1,8 +1,28 @@
 # AI Trust OS - Cost Estimator
 
+> ⚠️ **IMPORTANT: These are baseline (unoptimized) costs.** 
+> 
+> The scenarios below show what AI Trust OS costs **without any optimizations**. 
+> With the [cost-optimized.json](../config/cost-optimized.json) configuration, you can achieve:
+> - **Dev: $75/mo instead of $441** (83% savings)
+> - **Small Prod: $1,800/mo instead of $11,866** (85% savings)  
+> - **Large Prod: $28,000/mo instead of $146,310** (81% savings)
+> 
+> See [Cost Optimized Scenarios](#cost-optimized-scenarios) below for the optimized breakdowns.
+
 ## Pricing Overview
 
 This guide provides cost estimates for running AI Trust OS at different scales. Prices are based on AWS us-east-1 region as of January 2024 and are subject to change.
+
+## Quick Wins (Do These First)
+
+Before deploying, implement these optimizations for immediate 80%+ savings:
+
+1. **Model Routing** — Use Haiku for 80% of queries (10x cheaper than Sonnet)
+2. **Telemetry Sampling** — Log 10% in production (90% CloudWatch savings)
+3. **Right-Size Dev** — t3.small OpenSearch, 1 Kinesis shard, no replicas
+4. **Disable in Dev** — Turn off Guardrails and human review workflows
+5. **Use Serverless** — Neptune Serverless for variable dev workloads
 
 ## Cost Components
 
@@ -352,13 +372,108 @@ if __name__ == "__main__":
     print(f"  - Infrastructure: ${costs['infrastructure']:,.2f}")
 ```
 
+## Cost Optimized Scenarios
+
+The following scenarios use the [cost-optimized.json](../config/cost-optimized.json) configuration with all optimizations enabled.
+
+### Optimized Development (10K requests/day)
+
+**Optimizations Applied:**
+- Haiku-only (no model routing needed)
+- t3.medium Neptune Serverless (min 2.5 NCU)
+- t3.small OpenSearch (single instance)
+- 1 Kinesis shard, 24h retention
+- 7-day CloudWatch retention, 100% sampling
+- Guardrails: DISABLED
+- Human review: DISABLED
+
+| Component | Monthly Cost |
+|-----------|--------------|
+| Bedrock (Claude 3 Haiku) | $18 |
+| Neptune Serverless | ~$25 |
+| OpenSearch | $26 |
+| VPC (NAT + Endpoints) | $100 |
+| Lambda | $5 |
+| Kinesis | $12 |
+| CloudWatch | $8 |
+| KMS | $1 |
+| **Total** | **~$75-120/month** |
+
+**Savings vs Baseline:** 73-83%
+
+### Optimized Small Production (100K requests/day)
+
+**Optimizations Applied:**
+- 80% Haiku / 20% Sonnet routing by complexity
+- db.r5.large Neptune + 1 replica
+- t3.medium OpenSearch × 2
+- 2 Kinesis shards, 48h retention
+- 30-day CloudWatch retention, 50% sampling
+- Guardrails: ENABLED (content filters only)
+- Human review: DISABLED
+
+| Component | Monthly Cost |
+|-----------|--------------|
+| Bedrock (mixed routing) | ~$1,400 |
+| Neptune | $533 |
+| OpenSearch | $105 |
+| VPC (NAT + Endpoints) | $100 |
+| Lambda | $15 |
+| Kinesis | $25 |
+| CloudWatch | $35 |
+| Guardrails | $150 |
+| KMS | $1 |
+| **Total** | **~$1,800-2,500/month** |
+
+**Savings vs Baseline:** 79-85%
+
+### Optimized Large Production (1M requests/day)
+
+**Optimizations Applied:**
+- Smart routing: 75% Haiku / 20% Sonnet / 5% Opus
+- db.r6g.xlarge Neptune + 1 replica (reserved 1yr)
+- r6g.large OpenSearch × 3 with UltraWarm
+- 4 Kinesis shards, 7-day retention
+- 1-year CloudWatch retention, 10% sampling
+- ElastiCache for prompt/embedding cache
+- Guardrails: FULL (with PII detection)
+- Human review: ENABLED for sensitive content
+
+| Component | Monthly Cost |
+|-----------|--------------|
+| Bedrock (smart routing) | ~$20,000 |
+| Neptune (reserved) | $1,200 |
+| OpenSearch (with UltraWarm) | $420 |
+| VPC (NAT + Endpoints) | $150 |
+| Lambda | $50 |
+| Kinesis | $95 |
+| CloudWatch | $60 |
+| Guardrails | $750 |
+| Cognito (10K users) | $250 |
+| WAF | $150 |
+| ElastiCache | $250 |
+| KMS | $1 |
+| **Total** | **~$28,000-35,000/month** |
+
+**Savings vs Baseline:** 76-81%
+
 ## Summary
 
-| Scale | Requests/Day | Est. Monthly Cost | Per 1K Requests |
-|-------|--------------|-------------------|-----------------|
+### Baseline Costs (Unoptimized)
+
+| Scale | Requests/Day | Monthly Cost | Per 1K Requests |
+|-------|--------------|--------------|-----------------|
 | Dev | 10K | $441 | $1.47 |
 | Small Prod | 100K | $11,866 | $3.95 |
 | Large Prod | 1M | $146,310 | $4.88 |
+
+### Optimized Costs (With cost-optimized.json)
+
+| Scale | Requests/Day | Monthly Cost | Per 1K Requests | Savings |
+|-------|--------------|--------------|-----------------|---------|
+| Dev | 10K | **$75-120** | $0.25-0.40 | **73-83%** |
+| Small Prod | 100K | **$1,800-2,500** | $0.60-0.83 | **79-85%** |
+| Large Prod | 1M | **$28,000-35,000** | $0.93-1.17 | **76-81%** |
 
 **Note:** Actual costs will vary based on:
 - Token counts per request
