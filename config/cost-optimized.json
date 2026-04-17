@@ -1,0 +1,228 @@
+{
+  "_comment": "Cost-optimized configuration for AI Trust OS Quick Start",
+  "version": "1.0.0",
+  "environments": {
+    "dev": {
+      "bedrock": {
+        "default_model": "anthropic.claude-3-haiku-20240307-v1:0",
+        "model_routing": {
+          "enabled": false,
+          "fallback_to_haiku": true
+        },
+        "guardrails": {
+          "enabled": false
+        }
+      },
+      "neptune": {
+        "instance_class": "db.t3.medium",
+        "read_replicas": 0,
+        "serverless": {
+          "enabled": true,
+          "min_capacity": 2.5,
+          "max_capacity": 8
+        }
+      },
+      "opensearch": {
+        "instance_type": "t3.small.search",
+        "instance_count": 1,
+        "ultrawarm": {
+          "enabled": false
+        }
+      },
+      "kinesis": {
+        "shard_count": 1,
+        "retention_hours": 24
+      },
+      "cloudwatch": {
+        "log_retention_days": 7,
+        "telemetry_sampling_rate": 1.0
+      },
+      "step_functions": {
+        "human_review": {
+          "enabled": false
+        }
+      }
+    },
+    "staging": {
+      "bedrock": {
+        "default_model": "anthropic.claude-3-haiku-20240307-v1:0",
+        "model_routing": {
+          "enabled": true,
+          "rules": [
+            {
+              "complexity_threshold": 0.3,
+              "model": "anthropic.claude-3-haiku-20240307-v1:0"
+            },
+            {
+              "complexity_threshold": 0.8,
+              "model": "anthropic.claude-3-sonnet-20240229-v1:0"
+            },
+            {
+              "complexity_threshold": 1.0,
+              "model": "anthropic.claude-3-opus-20240229-v1:0"
+            }
+          ]
+        },
+        "guardrails": {
+          "enabled": true,
+          "content_filters": ["hate", "insults", "sexual", "violence"],
+          "denied_topics": ["legal_advice", "medical_advice"],
+          "word_filters": ["custom_blocked_words"]
+        }
+      },
+      "neptune": {
+        "instance_class": "db.r5.large",
+        "read_replicas": 0,
+        "serverless": {
+          "enabled": true,
+          "min_capacity": 4,
+          "max_capacity": 16
+        }
+      },
+      "opensearch": {
+        "instance_type": "t3.medium.search",
+        "instance_count": 2,
+        "ultrawarm": {
+          "enabled": false
+        }
+      },
+      "kinesis": {
+        "shard_count": 2,
+        "retention_hours": 48
+      },
+      "cloudwatch": {
+        "log_retention_days": 30,
+        "telemetry_sampling_rate": 0.5
+      },
+      "step_functions": {
+        "human_review": {
+          "enabled": false
+        }
+      }
+    },
+    "production": {
+      "bedrock": {
+        "default_model": "anthropic.claude-3-haiku-20240307-v1:0",
+        "model_routing": {
+          "enabled": true,
+          "rules": [
+            {
+              "complexity_threshold": 0.3,
+              "model": "anthropic.claude-3-haiku-20240307-v1:0",
+              "cache_embeddings": true
+            },
+            {
+              "complexity_threshold": 0.75,
+              "model": "anthropic.claude-3-sonnet-20240229-v1:0"
+            },
+            {
+              "complexity_threshold": 0.95,
+              "model": "anthropic.claude-3-opus-20240229-v1:0"
+            }
+          ]
+        },
+        "guardrails": {
+          "enabled": true,
+          "content_filters": ["hate", "insults", "sexual", "violence"],
+          "denied_topics": ["legal_advice", "medical_advice", "financial_advice"],
+          "word_filters": ["custom_blocked_words", "pii_keywords"],
+          "sensitive_information_policy": {
+            "pii_entities": ["EMAIL", "PHONE", "ADDRESS", "CREDIT_CARD", "SSN"],
+            "regex_patterns": ["custom_pii_pattern"]
+          }
+        },
+        "token_optimization": {
+          "max_prompt_tokens": 4000,
+          "cache_frequent_prompts": true,
+          "batch_small_requests": true
+        }
+      },
+      "neptune": {
+        "instance_class": "db.r6g.xlarge",
+        "read_replicas": 1,
+        "serverless": {
+          "enabled": false
+        },
+        "reserved_instances": {
+          "enabled": true,
+          "term": "1_year",
+          "payment_option": "partial_upfront"
+        }
+      },
+      "opensearch": {
+        "instance_type": "r6g.large.search",
+        "instance_count": 3,
+        "ultrawarm": {
+          "enabled": true,
+          "transition_after_days": 7
+        },
+        "cold_storage": {
+          "enabled": true,
+          "transition_after_days": 30
+        }
+      },
+      "kinesis": {
+        "shard_count": 4,
+        "retention_hours": 168,
+        "enhanced_fan_out": {
+          "enabled": true,
+          "consumer_count": 2
+        }
+      },
+      "cloudwatch": {
+        "log_retention_days": 365,
+        "telemetry_sampling_rate": 0.1,
+        "metrics_aggregation": {
+          "enabled": true,
+          "period_seconds": 60
+        }
+      },
+      "step_functions": {
+        "human_review": {
+          "enabled": true,
+          "trigger_conditions": ["pii_detected", "guardrail_intervened", "confidence_below_threshold"],
+          "escalation_timeout_minutes": 60
+        }
+      },
+      "caching": {
+        "elasticache": {
+          "enabled": true,
+          "node_type": "cache.r6g.large",
+          "cluster_mode": "enabled",
+          "num_shards": 2
+        },
+        "prompt_cache_ttl_seconds": 3600,
+        "embedding_cache_ttl_seconds": 86400
+      }
+    }
+  },
+  "cost_optimization": {
+    "reserved_capacity": {
+      "neptune": {
+        "dev": false,
+        "staging": false,
+        "production": true
+      },
+      "opensearch": {
+        "dev": false,
+        "staging": false,
+        "production": true
+      }
+    },
+    "spot_instances": {
+      "model_evaluation": {
+        "enabled": true,
+        "max_price_percentage": 70
+      },
+      "batch_processing": {
+        "enabled": true,
+        "max_price_percentage": 60
+      }
+    },
+    "s3_lifecycle": {
+      "infrequent_access_after_days": 30,
+      "glacier_after_days": 90,
+      "deep_archive_after_days": 180
+    }
+  }
+}

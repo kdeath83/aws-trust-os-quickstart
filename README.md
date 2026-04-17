@@ -137,13 +137,89 @@ ai-trust-os-quickstart/
 
 ## Cost Estimates
 
-| Scale | Requests/Day | Monthly Cost |
-|-------|--------------|--------------|
-| Development | 10K | ~$441 |
-| Small Production | 100K | ~$11,866 |
-| Large Production | 1M | ~$146,310 |
+| Scale | Requests/Day | Monthly Cost | Notes |
+|-------|--------------|--------------|-------|
+| **Dev (Minimal)** | 1K | ~$15-25 | Haiku-only, single AZ, 7-day logs |
+| **Dev (Full)** | 10K | ~$75-120 | Model routing, sampling, no replicas |
+| **Small Production** | 100K | ~$1,200-2,500 | Haiku-first, 10% sampling, right-sized infra |
+| **Medium Production** | 500K | ~$6,000-12,000 | Smart routing, cache layer, reserved capacity |
+| **Large Production** | 1M | ~$15,000-35,000 | Optimized Sonnet/Opus mix, reserved Neptune |
+
+*Original estimates were $441-$146K — **80-90% reduction possible** with optimizations below.*
 
 See [Cost Estimator](docs/cost-estimator.md) for detailed breakdowns.
+
+## Cost Optimization Guide
+
+### 1. Route by Complexity (10x savings on LLM costs)
+
+Don't use Claude 3 Sonnet for everything. Route based on task complexity:
+
+```python
+# config/model-router.json
+{
+  "routing_rules": [
+    {"model": "claude-3-haiku", "cost_per_1k": 0.25, "complexity_threshold": 0.3},
+    {"model": "claude-3-sonnet", "cost_per_1k": 3.00, "complexity_threshold": 0.7},
+    {"model": "claude-3-opus", "cost_per_1k": 15.00, "complexity_threshold": 1.0}
+  ]
+}
+```
+
+**Impact:** 70-85% of queries can use Haiku instead of Sonnet.
+
+### 2. Telemetry Sampling (90% log savings)
+
+Log everything in dev. Sample in production:
+
+```python
+# functions/gateway-proxy/handler.py
+import random
+
+SAMPLE_RATE = 0.1  # 10% in prod, 1.0 in dev
+
+if random.random() < SAMPLE_RATE:
+    log_to_opensearch(event)
+```
+
+**Impact:** CloudWatch costs drop from $300/mo to $30/mo at scale.
+
+### 3. Right-Size Infrastructure
+
+| Service | Original | Optimized | Savings |
+|---------|----------|-----------|---------|
+| Neptune | db.r6g.xlarge + 2 replicas | Serverless or db.t3.medium (dev) | 80-90% |
+| OpenSearch | t3.medium × 3 | t3.small × 2 (dev) / UltraWarm (prod) | 50-70% |
+| Kinesis | 8 shards | 1-2 shards + batching | 75-87% |
+
+Deploy with cost-optimized flag:
+
+```bash
+./deploy.sh --environment dev --cost-optimized
+```
+
+### 4. Token Optimization
+
+- **Truncation:** Cut prompts at 2K tokens for classification tasks
+- **Caching:** Cache embeddings and frequent prompts in ElastiCache
+- **Batching:** Group multiple small requests into single Bedrock calls
+
+### 5. Guardrails by Environment
+
+| Environment | Guardrails | Human Review | Audit Manager |
+|-------------|-----------|--------------|---------------|
+| Dev | Disabled | Disabled | 7-day retention |
+| Staging | Enabled, basic | Disabled | 30-day retention |
+| Production | Enabled, full | Enabled for PII | 1-year retention |
+
+### Quick Win Checklist
+
+- [ ] Replace 100% Sonnet with 80% Haiku / 20% Sonnet routing
+- [ ] Enable 10% telemetry sampling in prod
+- [ ] Use Neptune Serverless instead of provisioned (dev)
+- [ ] Set CloudWatch retention to 7 days (dev) / 30 days (prod)
+- [ ] Disable Guardrails in dev environments
+- [ ] Use Spot instances for model evaluation pipelines
 
 ## Compliance
 
