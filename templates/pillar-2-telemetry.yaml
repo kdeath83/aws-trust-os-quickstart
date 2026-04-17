@@ -1,0 +1,237 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AI Trust OS - Pillar 2: Telemetry (CloudWatch, OpenSearch, Kinesis for Bedrock telemetry)'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment environment
+  
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID from main template
+  
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private Subnet 1 ID
+  
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private Subnet 2 ID
+  
+  OpenSearchSecurityGroup:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: OpenSearch Security Group ID
+  
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Lambda Security Group ID
+  
+  LambdaExecutionRoleArn:
+    Type: String
+    Description: Lambda Execution Role ARN
+  
+  KMSKeyId:
+    Type: String
+    Description: KMS Key ID for encryption
+  
+  S3BucketName:
+    Type: String
+    Description: S3 Bucket for audit logs
+  
+  OpenSearchInstanceType:
+    Type: String
+    Default: t3.small.search
+    AllowedValues:
+      - t3.small.search
+      - t3.medium.search
+      - m6g.large.search
+      - m6g.xlarge.search
+      - r6g.large.search
+      - r6g.xlarge.search
+    Description: OpenSearch instance type
+  
+  OpenSearchInstanceCount:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 10
+    Description: Number of OpenSearch instances
+  
+  EnableKinesis:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Enable Kinesis for real-time streaming
+  
+  LogRetentionDays:
+    Type: Number
+    Default: 90
+    AllowedValues: [1, 3, 7, 14, 30, 60, 90, 120, 150, 180, 365]
+    Description: CloudWatch log retention period
+
+Conditions:
+  IsProduction: !Equals [!Ref Environment, prod]
+  EnableKinesisCondition: !Equals [!Ref EnableKinesis, 'true']
+  UseDedicatedMaster: !Or [!Equals [!Ref Environment, prod], !Equals [!Ref Environment, staging]]
+
+Resources:
+  # OpenSearch Domain
+  AITrustOSOpenSearch:
+    Type: AWS::OpenSearchService::Domain
+    Properties:
+      DomainName: !Sub 'ai-trust-os-logs-${Environment}'
+      EngineVersion: OpenSearch_2.11
+      ClusterConfig:
+        InstanceType: !Ref OpenSearchInstanceType
+        InstanceCount: !Ref OpenSearchInstanceCount
+        DedicatedMasterEnabled: !If [UseDedicatedMaster, true, false]
+        DedicatedMasterType: !If [UseDedicatedMaster, t3.small.search, !Ref 'AWS::NoValue']
+        DedicatedMasterCount: !If [UseDedicatedMaster, 3, !Ref 'AWS::NoValue']
+        ZoneAwarenessEnabled: true
+        ZoneAwarenessConfig:
+          AvailabilityZoneCount: 2
+      VPCOptions:
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+        SecurityGroupIds:
+          - !Ref OpenSearchSecurityGroup
+      EBSOptions:
+        EBSEnabled: true
+        VolumeType: gp3
+        VolumeSize: !If [IsProduction, 100, 20]
+        Iops: !If [IsProduction, 3000, 1000]
+      EncryptionAtRestOptions:
+        Enabled: true
+        KmsKeyId: !Ref KMSKeyId
+      NodeToNodeEncryptionOptions:
+        Enabled: true
+      DomainEndpointOptions:
+        EnforceHTTPS: true
+        TLSSecurityPolicy: Policy-Min-TLS-1-2-2019-07
+      AccessPolicies:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref LambdaExecutionRoleArn
+            Action:
+              - es:ESHttpPost
+              - es:ESHttpPut
+              - es:ESHttpGet
+            Resource: !Sub 'arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/ai-trust-os-logs-${Environment}/*'
+      LogPublishingOptions:
+        ES_APPLICATION_LOGS:
+          CloudWatchLogsLogGroupArn: !GetAtt OpenSearchApplicationLogGroup.Arn
+          Enabled: true
+        SEARCH_SLOW_LOGS:
+          CloudWatchLogsLogGroupArn: !GetAtt OpenSearchSearchSlowLogGroup.Arn
+          Enabled: true
+        INDEX_SLOW_LOGS:
+          CloudWatchLogsLogGroupArn: !GetAtt OpenSearchIndexSlowLogGroup.Arn
+          Enabled: true
+      AdvancedOptions:
+        rest.action.multi.allow_explicit_index: 'true'
+      AdvancedSecurityOptions:
+        Enabled: true
+        InternalUserDatabaseEnabled: true
+        MasterUserOptions:
+          MasterUserName: !Sub 'ai-trust-os-admin-${Environment}'
+          MasterUserPassword: !Sub '{{resolve:secretsmanager:ai-trust-os-opensearch-${Environment}:SecretString:password}}'
+      Tags:
+        - Key: Name
+          Value: !Sub 'ai-trust-os-opensearch-${Environment}'
+        - Key: Purpose
+          Value: ai-telemetry-storage
+
+  # OpenSearch Log Groups
+  OpenSearchApplicationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/opensearch/ai-trust-os-${Environment}/application-logs'
+      RetentionInDays: !Ref LogRetentionDays
+
+  OpenSearchSearchSlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/opensearch/ai-trust-os-${Environment}/search-slow-logs'
+      RetentionInDays: !Ref LogRetentionDays
+
+  OpenSearchIndexSlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/opensearch/ai-trust-os-${Environment}/index-slow-logs'
+      RetentionInDays: !Ref LogRetentionDays
+
+  # Kinesis Data Stream for real-time telemetry
+  AITelemetryKinesisStream:
+    Type: AWS::Kinesis::Stream
+    Condition: EnableKinesisCondition
+    Properties:
+      Name: !Sub 'ai-trust-os-telemetry-${Environment}'
+      ShardCount: !If [IsProduction, 4, 2]
+      StreamModeDetails:
+        StreamMode: PROVISIONED
+      RetentionPeriodHours: !If [IsProduction, 168, 24]
+      EncryptionType: KMS
+      KeyId: !Ref KMSKeyId
+
+  # CloudWatch Log Group for Bedrock Model Invocation
+  BedrockInvocationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/bedrock/model-invocations
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/${KMSKeyId}'
+
+  # CloudWatch Dashboard
+  AITelemetryDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub 'AI-Trust-OS-Telemetry-${Environment}'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Bedrock Model Invocations",
+                "metrics": [["AITrustOS/Bedrock", "ModelInvocations", {"stat": "Sum"}]],
+                "period": 300,
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 6,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "title": "Recent Bedrock Invocations",
+                "query": "SOURCE '/aws/bedrock/model-invocations' | fields @timestamp, modelId | sort @timestamp desc | limit 20",
+                "region": "${AWS::Region}"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  OpenSearchDomainEndpoint:
+    Description: OpenSearch Domain Endpoint
+    Value: !GetAtt AITrustOSOpenSearch.DomainEndpoint
+    Export:
+      Name: !Sub 'ai-trust-os-opensearch-endpoint-${Environment}'
+
+  KinesisStreamArn:
+    Description: Kinesis Stream ARN
+    Value: !If [EnableKinesisCondition, !GetAtt AITelemetryKinesisStream.Arn, 'N/A']
+    Export:
+      Name: !Sub 'ai-trust-os-kinesis-arn-${Environment}''
+}

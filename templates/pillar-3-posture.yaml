@@ -1,0 +1,460 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AI Trust OS - Pillar 3: Posture (Bedrock Guardrails, Step Functions for human review, Audit Manager)'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment environment
+  
+  LambdaExecutionRoleArn:
+    Type: String
+    Description: Lambda Execution Role ARN
+  
+  StepFunctionsExecutionRoleArn:
+    Type: String
+    Description: Step Functions Execution Role ARN
+  
+  SNSTopicArn:
+    Type: String
+    Description: SNS Topic ARN for notifications
+  
+  KMSKeyId:
+    Type: String
+    Description: KMS Key ID for encryption
+  
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Lambda Security Group ID
+  
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private Subnet 1 ID
+  
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private Subnet 2 ID
+  
+  EnableHumanReview:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Enable human review workflow for sensitive content
+  
+  ContentModerationThreshold:
+    Type: String
+    Default: MEDIUM
+    AllowedValues: [LOW, MEDIUM, HIGH]
+    Description: Guardrail content moderation sensitivity
+
+Conditions:
+  IsProduction: !Equals [!Ref Environment, prod]
+  EnableHumanReviewCondition: !Equals [!Ref EnableHumanReview, 'true']
+
+Resources:
+  # Bedrock Guardrail for Content Filtering
+  AITrustOSGuardrail:
+    Type: AWS::Bedrock::Guardrail
+    Properties:
+      Name: !Sub 'ai-trust-os-guardrail-${Environment}'
+      Description: AI Trust OS Guardrail for content moderation and safety
+      BlockedInputMessaging: 'This input violates our usage policy. Please rephrase your request.'
+      BlockedOutputsMessaging: 'This response could not be generated due to safety guidelines.'
+      KmsKeyId: !Ref KMSKeyId
+      ContentPolicyConfig:
+        FiltersConfig:
+          - Type: VIOLENCE
+            InputStrength: !Ref ContentModerationThreshold
+            OutputStrength: HIGH
+          - Type: SEXUAL
+            InputStrength: !Ref ContentModerationThreshold
+            OutputStrength: HIGH
+          - Type: HATE
+            InputStrength: !Ref ContentModerationThreshold
+            OutputStrength: HIGH
+          - Type: INSULTS
+            InputStrength: LOW
+            OutputStrength: MEDIUM
+          - Type: MISCONDUCT
+            InputStrength: !Ref ContentModerationThreshold
+            OutputStrength: HIGH
+          - Type: PROMPT_ATTACK
+            InputStrength: HIGH
+            OutputStrength: NONE
+      WordPolicyConfig:
+        ManagedWordListsConfig:
+          - Type: PROFANITY
+            InputAction: BLOCK
+            OutputAction: BLOCK
+      SensitiveInformationPolicyConfig:
+        PiiEntitiesConfig:
+          - Type: EMAIL
+            Action: BLOCK
+          - Type: PHONE
+            Action: BLOCK
+          - Type: ADDRESS
+            Action: ANONYMIZE
+          - Type: NAME
+            Action: ANONYMIZE
+          - Type: CREDIT_DEBIT_CARD_NUMBER
+            Action: BLOCK
+          - Type: BANK_ACCOUNT_NUMBER
+            Action: BLOCK
+          - Type: US_SOCIAL_SECURITY_NUMBER
+            Action: BLOCK
+      TopicPolicyConfig:
+        TopicsConfig:
+          - Name: FinancialAdvice
+            Definition: Content providing specific investment, trading, or financial advice that could impact financial decisions
+            Type: DENY
+            InputAction: BLOCK
+            OutputAction: BLOCK
+          - Name: MedicalAdvice
+            Definition: Content providing specific medical diagnoses, treatment recommendations, or prescription advice
+            Type: DENY
+            InputAction: BLOCK
+            OutputAction: BLOCK
+          - Name: LegalAdvice
+            Definition: Content providing specific legal advice, interpretations, or recommendations for legal action
+            Type: DENY
+            InputAction: BLOCK
+            OutputAction: BLOCK
+      ContextualGroundingPolicyConfig:
+        FiltersConfig:
+          - Type: GROUNDING
+            Threshold: 0.7
+          - Type: RELEVANCE
+            Threshold: 0.7
+      Tags:
+        - Key: Name
+          Value: !Sub 'ai-trust-os-guardrail-${Environment}'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Guardrail Version
+  AITrustOSGuardrailVersion:
+    Type: AWS::Bedrock::GuardrailVersion
+    DependsOn: AITrustOSGuardrail
+    Properties:
+      GuardrailIdentifier: !Ref AITrustOSGuardrail
+      Description: 'Version 1 - Initial guardrail configuration'
+
+  # Step Functions State Machine for Human Review
+  HumanReviewStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Condition: EnableHumanReviewCondition
+    Properties:
+      StateMachineName: !Sub 'ai-trust-os-human-review-${Environment}'
+      StateMachineType: STANDARD
+      RoleArn: !Ref StepFunctionsExecutionRoleArn
+      Definition:
+        Comment: "Human Review Workflow for AI Content Moderation"
+        StartAt: EvaluateGuardrail
+        States:
+          EvaluateGuardrail:
+            Type: Task
+            Resource: !Sub 'arn:aws:states:::aws-sdk:bedrock:applyGuardrail'
+            Parameters:
+              GuardrailIdentifier: !Ref AITrustOSGuardrail
+              GuardrailVersion: "DRAFT"
+              Content:
+                - Text:
+                    Text:.$.input.content
+            ResultPath: $.guardrail_result
+            Next: CheckInterventionNeeded
+          
+          CheckInterventionNeeded:
+            Type: Choice
+            Choices:
+              - Variable: $.guardrail_result.action
+                StringEquals: GUARDRAIL_INTERVENED
+                Next: CheckSeverity
+            Default: AllowContent
+          
+          CheckSeverity:
+            Type: Choice
+            Choices:
+              - Or:
+                  - Variable: $.guardrail_result.outputs[0].topicPolicy.topics[0].name
+                    StringEquals: FinancialAdvice
+                  - Variable: $.guardrail_result.outputs[0].topicPolicy.topics[0].name
+                    StringEquals: MedicalAdvice
+                  - Variable: $.guardrail_result.outputs[0].topicPolicy.topics[0].name
+                    StringEquals: LegalAdvice
+                Next: RequestHumanReview
+            Default: BlockContent
+          
+          RequestHumanReview:
+            Type: Task
+            Resource: "arn:aws:states:::lambda:invoke"
+            Parameters:
+              FunctionName: !Ref GuardrailsReviewerFunction
+              Payload:
+                content.$: $.input.content
+                guardrail_result.$: $.guardrail_result
+                request_id.$: $$.Execution.Id
+            ResultPath: $.review_result
+            Next: WaitForReview
+          
+          WaitForReview:
+            Type: Wait
+            Seconds: 3600
+            Next: CheckReviewStatus
+          
+          CheckReviewStatus:
+            Type: Task
+            Resource: !GetAtt CheckReviewStatusFunction.Arn
+            ResultPath: $.review_status
+            Next: ReviewDecision
+          
+          ReviewDecision:
+            Type: Choice
+            Choices:
+              - Variable: $.review_status.decision
+                StringEquals: APPROVE
+                Next: AllowContent
+              - Variable: $.review_status.decision
+                StringEquals: REJECT
+                Next: BlockContent
+              - Variable: $.review_status.decision
+                StringEquals: MODIFY
+                Next: UseModifiedContent
+            Default: BlockContent
+          
+          UseModifiedContent:
+            Type: Pass
+            ResultPath: $.output
+            Result:
+              content: "Modified content approved by human reviewer"
+              status: MODIFIED
+            End: true
+          
+          AllowContent:
+            Type: Pass
+            ResultPath: $.output
+            Result:
+              status: ALLOWED
+            End: true
+          
+          BlockContent:
+            Type: Pass
+            ResultPath: $.output
+            Result:
+              status: BLOCKED
+              reason: "Content violates guardrail policies"
+            End: true
+      DefinitionSubstitutions:
+        GuardrailId: !Ref AITrustOSGuardrail
+      TracingConfiguration:
+        Enabled: true
+      LoggingConfiguration:
+        Level: ALL
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt StepFunctionsLogGroup.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub 'ai-trust-os-human-review-${Environment}'
+
+  # Step Functions Log Group
+  StepFunctionsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: EnableHumanReviewCondition
+    Properties:
+      LogGroupName: !Sub '/aws/stepfunctions/ai-trust-os-human-review-${Environment}'
+      RetentionInDays: 90
+      KmsKeyId: !Ref KMSKeyId
+
+  # Lambda for Guardrails Reviewer (Human Review Tasks)
+  GuardrailsReviewerFunction:
+    Type: AWS::Lambda::Function
+    Condition: EnableHumanReviewCondition
+    Properties:
+      FunctionName: !Sub 'ai-trust-os-guardrails-reviewer-${Environment}'
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !Ref LambdaExecutionRoleArn
+      Timeout: 300
+      MemorySize: 512
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          SNS_TOPIC_ARN: !Ref SNSTopicArn
+          REVIEW_TABLE: !Ref HumanReviewTable
+          KMS_KEY_ID: !Ref KMSKeyId
+
+  # DynamoDB Table for Human Review Tasks
+  HumanReviewTable:
+    Type: AWS::DynamoDB::Table
+    Condition: EnableHumanReviewCondition
+    Properties:
+      TableName: !Sub 'ai-trust-os-human-review-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: review_id
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+        - AttributeName: created_at
+          AttributeType: S
+      KeySchema:
+        - AttributeName: review_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: status-created-index
+          KeySchema:
+            - AttributeName: status
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        KMSMasterKeyId: !Ref KMSKeyId
+        SSEType: KMS
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      Tags:
+        - Key: Name
+          Value: !Sub 'ai-trust-os-human-review-table-${Environment}'
+
+  # Lambda for checking review status
+  CheckReviewStatusFunction:
+    Type: AWS::Lambda::Function
+    Condition: EnableHumanReviewCondition
+    Properties:
+      FunctionName: !Sub 'ai-trust-os-check-review-status-${Environment}'
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !Ref LambdaExecutionRoleArn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          REVIEW_TABLE: !Ref HumanReviewTable
+
+  # Audit Manager Assessment
+  AITrustOSAuditFramework:
+    Type: AWS::AuditManager::Assessment
+    Condition: IsProduction
+    Properties:
+      Name: !Sub 'AI-Trust-OS-Assessment-${Environment}'
+      Description: Assessment for AI Trust OS governance and compliance
+      AssessmentReportsDestination:
+        DestinationType: S3
+        Destination: !Sub 'arn:aws:s3:::ai-trust-os-audit-reports-${AWS::AccountId}'
+      FrameworkId: !FindInMap [AuditFrameworks, !Ref 'AWS::Region', AIFrameworkId]
+      Roles:
+        - RoleArn: !Ref LambdaExecutionRoleArn
+          RoleType: PROCESS_OWNER
+      Scope:
+        AwsAccounts:
+          - Id: !Ref 'AWS::AccountId'
+        AwsServices:
+          - ServiceName: bedrock
+          - ServiceName: sagemaker
+          - ServiceName: lambda
+      Tags:
+        - Key: Name
+          Value: !Sub 'ai-trust-os-audit-${Environment}'
+
+  # CloudWatch Event Rule for Guardrail Metrics
+  GuardrailMetricsSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub 'ai-trust-os-guardrail-metrics-${Environment}'
+      Description: Collect Guardrail intervention metrics every 5 minutes
+      ScheduleExpression: rate(5 minutes)
+      State: ENABLED
+      Targets:
+        - Id: GuardrailMetricsLambda
+          Arn: !GetAtt GuardrailMetricsFunction.Arn
+
+  GuardrailMetricsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'ai-trust-os-guardrail-metrics-${Environment}'
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !Ref LambdaExecutionRoleArn
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          GUARDRAIL_ID: !Ref AITrustOSGuardrail
+
+  GuardrailMetricsPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt GuardrailMetricsFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt GuardrailMetricsSchedule.Arn
+
+  # CloudWatch Alarm for Guardrail Interventions
+  HighGuardrailInterventionsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'ai-trust-os-high-guardrail-interventions-${Environment}'
+      AlarmDescription: Alarm when guardrail intervention rate is high
+      MetricName: GuardrailInterventions
+      Namespace: AWS/Bedrock
+      Dimensions:
+        - Name: GuardrailId
+          Value: !Ref AITrustOSGuardrail
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref SNSTopicArn
+
+Mappings:
+  AuditFrameworks:
+    us-east-1:
+      AIFrameworkId: 'ai-governance-framework-v1'
+    us-west-2:
+      AIFrameworkId: 'ai-governance-framework-v1'
+    eu-west-1:
+      AIFrameworkId: 'ai-governance-framework-v1'
+    ap-southeast-2:
+      AIFrameworkId: 'ai-governance-framework-v1'
+
+Outputs:
+  GuardrailId:
+    Description: Bedrock Guardrail ID
+    Value: !Ref AITrustOSGuardrail
+    Export:
+      Name: !Sub 'ai-trust-os-guardrail-id-${Environment}'
+
+  GuardrailArn:
+    Description: Bedrock Guardrail ARN
+    Value: !GetAtt AITrustOSGuardrail.GuardrailArn
+    Export:
+      Name: !Sub 'ai-trust-os-guardrail-arn-${Environment}'
+
+  HumanReviewStateMachineArn:
+    Description: Human Review State Machine ARN
+    Value: !If [EnableHumanReviewCondition, !Ref HumanReviewStateMachine, 'N/A']
+    Export:
+      Name: !Sub 'ai-trust-os-human-review-sm-${Environment}'
+
+  HumanReviewTableName:
+    Description: Human Review DynamoDB Table
+    Value: !If [EnableHumanReviewCondition, !Ref HumanReviewTable, 'N/A']
+    Export:
+      Name: !Sub 'ai-trust-os-human-review-table-${Environment}'

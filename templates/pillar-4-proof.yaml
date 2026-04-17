@@ -1,0 +1,550 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AI Trust OS - Pillar 4: Proof (PrivateLink, KMS, Cognito, VPC Lattice)'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment environment
+  
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID from main template
+  
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private Subnet 1 ID
+  
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private Subnet 2 ID
+  
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Lambda Security Group ID
+  
+  LambdaExecutionRoleArn:
+    Type: String
+    Description: Lambda Execution Role ARN
+  
+  KMSKeyId:
+    Type: String
+    Description: KMS Key ID for encryption
+  
+  EnableVPC Lattice:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Enable VPC Lattice for service mesh
+  
+  EnableCognito:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Enable Cognito for API authentication
+
+Conditions:
+  IsProduction: !Equals [!Ref Environment, prod]
+  EnableVPCLatticeCondition: !Equals [!Ref EnableVPC Lattice, 'true']
+  EnableCognitoCondition: !Equals [!Ref EnableCognito, 'true']
+
+Resources:
+  # VPC Endpoints for PrivateLink (additional services)
+  VPCEndpointCloudWatch:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.logs'
+      VpcId: !Ref VPCId
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+
+  VPCEndpointCloudWatchMonitoring:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.monitoring'
+      VpcId: !Ref VPCId
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+
+  VPCEndpointKMS:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.kms'
+      VpcId: !Ref VPCId
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+
+  VPCEndpointSNS:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.sns'
+      VpcId: !Ref VPCId
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+
+  VPCEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for VPC endpoints
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub 'ai-trust-os-vpc-endpoint-sg-${Environment}'
+
+  # VPC Lattice Service Network
+  AITrustOSServiceNetwork:
+    Type: AWS::VpcLattice::ServiceNetwork
+    Condition: EnableVPCLatticeCondition
+    Properties:
+      Name: !Sub 'ai-trust-os-services-${Environment}'
+      AuthType: AWS_IAM
+
+  # VPC Lattice Service Association
+  BedrockServiceAssociation:
+    Type: AWS::VpcLattice::ServiceNetworkServiceAssociation
+    Condition: EnableVPCLatticeCondition
+    Properties:
+      ServiceNetworkIdentifier: !Ref AITrustOSServiceNetwork
+      ServiceIdentifier: !Sub 'arn:aws:vpc-lattice:${AWS::Region}:${AWS::AccountId}:service/bedrock-runtime'
+
+  # VPC Lattice Target Group
+  AITrustOSTargetGroup:
+    Type: AWS::VpcLattice::TargetGroup
+    Condition: EnableVPCLatticeCondition
+    Properties:
+      Name: !Sub 'ai-trust-os-lambda-tg-${Environment}'
+      Type: LAMBDA
+      Config:
+        LambdaEventStructureVersion: V2
+
+  # Cognito User Pool
+  AITrustOSUserPool:
+    Type: AWS::Cognito::UserPool
+    Condition: EnableCognitoCondition
+    Properties:
+      UserPoolName: !Sub 'ai-trust-os-users-${Environment}'
+      AutoVerifiedAttributes:
+        - email
+      MfaConfiguration: !If [IsProduction, OPTIONAL, 'OFF']
+      EnabledMfas:
+        - SOFTWARE_TOKEN_MFA
+        - SMS_MFA
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          TemporaryPasswordValidityDays: 7
+      Schema:
+        - Name: email
+          Required: true
+          Mutable: true
+        - Name: name
+          Required: true
+          Mutable: true
+        - Name: company
+          Required: false
+          Mutable: true
+        - Name: role
+          Required: false
+          Mutable: true
+      UserPoolAddOns:
+        AdvancedSecurityMode: !If [IsProduction, ENFORCED, 'OFF']
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      UserPoolTags:
+        Name: !Sub 'ai-trust-os-users-${Environment}'
+
+  # Cognito User Pool Client
+  AITrustOSUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Condition: EnableCognitoCondition
+    Properties:
+      UserPoolId: !Ref AITrustOSUserPool
+      ClientName: !Sub 'ai-trust-os-app-${Environment}'
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_ADMIN_USER_PASSWORD_AUTH
+      AllowedOAuthFlows:
+        - implicit
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+        - bedrock/invoke
+      CallbackURLs:
+        - https://localhost:3000/callback
+        - https://ai-trust-os.example.com/callback
+      LogoutURLs:
+        - https://localhost:3000/logout
+        - https://ai-trust-os.example.com/logout
+      SupportedIdentityProviders:
+        - COGNITO
+      PreventUserExistenceErrors: ENABLED
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+
+  # Cognito User Pool Domain
+  AITrustOSUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Condition: EnableCognitoCondition
+    Properties:
+      Domain: !Sub 'ai-trust-os-${Environment}-${AWS::AccountId}'
+      UserPoolId: !Ref AITrustOSUserPool
+
+  # Cognito Identity Pool
+  AITrustOSIdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Condition: EnableCognitoCondition
+    Properties:
+      IdentityPoolName: !Sub 'ai_trust_os_identity_${Environment}'
+      AllowUnauthenticatedIdentities: false
+      CognitoIdentityProviders:
+        - ClientId: !Ref AITrustOSUserPoolClient
+          ProviderName: !GetAtt AITrustOSUserPool.ProviderName
+          ServerSideTokenCheck: true
+
+  # Cognito Identity Pool Role Attachment
+  IdentityPoolRoleAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Condition: EnableCognitoCondition
+    Properties:
+      IdentityPoolId: !Ref AITrustOSIdentityPool
+      Roles:
+        authenticated: !GetAtt CognitoAuthorizedRole.Arn
+        unauthenticated: !GetAtt CognitoUnauthorizedRole.Arn
+
+  # Cognito Authorized Role
+  CognitoAuthorizedRole:
+    Type: AWS::IAM::Role
+    Condition: EnableCognitoCondition
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                cognito-identity.amazonaws.com:aud: !Ref AITrustOSIdentityPool
+              ForAnyValue:StringLike:
+                cognito-identity.amazonaws.com:amr: authenticated
+      Policies:
+        - PolicyName: BedrockInvokePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - bedrock:ApplyGuardrail
+                Resource: '*'
+
+  # Cognito Unauthorized Role
+  CognitoUnauthorizedRole:
+    Type: AWS::IAM::Role
+    Condition: EnableCognitoCondition
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                cognito-identity.amazonaws.com:aud: !Ref AITrustOSIdentityPool
+              ForAnyValue:StringLike:
+                cognito-identity.amazonaws.com:amr: unauthenticated
+      Policies:
+        - PolicyName: NoAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Deny
+                Action: '*'
+                Resource: '*'
+
+  # API Gateway for AI Proxy
+  AITrustOSApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub 'ai-trust-os-api-${Environment}'
+      Description: AI Trust OS API Gateway for Bedrock proxy
+      EndpointConfiguration:
+        Types:
+          - PRIVATE
+        VpcEndpointIds:
+          - !Ref VPCEndpointBedrock
+      Policy:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: 'execute-api:Invoke'
+            Resource: 'execute-api:/*'
+            Condition:
+              StringEquals:
+                aws:SourceVpce: !Ref VPCEndpointBedrock
+
+  VPCEndpointBedrock:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.execute-api'
+      VpcId: !Ref VPCId
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+
+  # API Gateway Resource
+  BedrockProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AITrustOSApiGateway
+      ParentId: !GetAtt AITrustOSApiGateway.RootResourceId
+      PathPart: bedrock
+
+  InvokeModelResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AITrustOSApiGateway
+      ParentId: !Ref BedrockProxyResource
+      PathPart: invoke-model
+
+  # API Gateway Method
+  InvokeModelMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AITrustOSApiGateway
+      ResourceId: !Ref InvokeModelResource
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref AITrustOSAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations'
+          - lambdaArn: !GetAtt APIGatewayProxyFunction.Arn
+        IntegrationResponses:
+          - StatusCode: 200
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+
+  # API Gateway Authorizer
+  AITrustOSAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Condition: EnableCognitoCondition
+    Properties:
+      Name: !Sub 'ai-trust-os-authorizer-${Environment}'
+      RestApiId: !Ref AITrustOSApiGateway
+      Type: COGNITO_USER_POOLS
+      ProviderARNs:
+        - !GetAtt AITrustOSUserPool.Arn
+      IdentitySource: method.request.header.Authorization
+
+  # Lambda for API Gateway Proxy
+  APIGatewayProxyFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'ai-trust-os-api-gateway-proxy-${Environment}'
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !Ref LambdaExecutionRoleArn
+      Timeout: 60
+      MemorySize: 512
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          KMS_KEY_ID: !Ref KMSKeyId
+          GUARDRAIL_ID: '{{resolve:ssm-secure:/ai-trust-os/guardrail-id-${Environment}}}'
+
+  # API Gateway Deployment
+  AITrustOSApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - InvokeModelMethod
+    Properties:
+      RestApiId: !Ref AITrustOSApiGateway
+      StageName: !Ref Environment
+
+  # Lambda Permission for API Gateway
+  APIGatewayProxyPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt APIGatewayProxyFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${AITrustOSApiGateway}/*'
+
+  # AWS Secrets Manager for credentials
+  AITrustOSSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub 'ai-trust-os-credentials-${Environment}'
+      Description: Credentials for AI Trust OS services
+      KmsKeyId: !Ref KMSKeyId
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"admin"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+
+  # Systems Manager Parameter Store
+  AITrustOSGuardrailParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/ai-trust-os/guardrail-id-${Environment}'
+      Description: Bedrock Guardrail ID
+      Type: SecureString
+      Value: placeholder
+      KeyId: !Ref KMSKeyId
+      Tier: Standard
+
+  # CloudWatch Log Group for API Gateway
+  ApiGatewayLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/apigateway/ai-trust-os-${Environment}'
+      RetentionInDays: 90
+      KmsKeyId: !Ref KMSKeyId
+
+  # WAF WebACL for API Gateway
+  AITrustOSWAF:
+    Type: AWS::WAFv2::WebACL
+    Condition: IsProduction
+    Properties:
+      Name: !Sub 'ai-trust-os-waf-${Environment}'
+      Description: WAF for AI Trust OS API
+      Scope: REGIONAL
+      DefaultAction:
+        Allow: {}
+      Rules:
+        - Name: RateLimitRule
+          Priority: 1
+          Statement:
+            RateBasedStatement:
+              Limit: 1000
+              AggregateKeyType: IP
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: RateLimitRule
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 2
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: AWSManagedRulesCommonRuleSet
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: AITrustOSWAF
+
+  # WAF Association
+  WAFAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Condition: IsProduction
+    Properties:
+      ResourceArn: !Sub 'arn:aws:apigateway:${AWS::Region}::/restapis/${AITrustOSApiGateway}/stages/${Environment}'
+      WebACLArn: !GetAtt AITrustOSWAF.Arn
+
+Outputs:
+  APIGatewayEndpoint:
+    Description: API Gateway Endpoint URL
+    Value: !Sub 'https://${AITrustOSApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+    Export:
+      Name: !Sub 'ai-trust-os-api-endpoint-${Environment}'
+
+  VPCEndpoints:
+    Description: VPC Endpoint IDs
+    Value: !Join [',', [!Ref VPCEndpointCloudWatch, !Ref VPCEndpointKMS, !Ref VPCEndpointSNS]]
+
+  CognitoUserPoolId:
+    Description: Cognito User Pool ID
+    Value: !If [EnableCognitoCondition, !Ref AITrustOSUserPool, 'N/A']
+    Export:
+      Name: !Sub 'ai-trust-os-user-pool-${Environment}'
+
+  CognitoUserPoolClientId:
+    Description: Cognito User Pool Client ID
+    Value: !If [EnableCognitoCondition, !Ref AITrustOSUserPoolClient, 'N/A']
+    Export:
+      Name: !Sub 'ai-trust-os-user-pool-client-${Environment}'
+
+  CognitoIdentityPoolId:
+    Description: Cognito Identity Pool ID
+    Value: !If [EnableCognitoCondition, !Ref AITrustOSIdentityPool, 'N/A']
+    Export:
+      Name: !Sub 'ai-trust-os-identity-pool-${Environment}'
+
+  VPCServiceNetworkArn:
+    Description: VPC Lattice Service Network ARN
+    Value: !If [EnableVPCLatticeCondition, !GetAtt AITrustOSServiceNetwork.Arn, 'N/A']
+    Export:
+      Name: !Sub 'ai-trust-os-vpc-lattice-network-${Environment}'

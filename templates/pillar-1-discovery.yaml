@@ -1,0 +1,498 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AI Trust OS - Pillar 1: Discovery (CodeGuru, Config, Neptune for AI asset discovery)'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment environment
+  
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID from main template
+  
+  DatabaseSubnet1:
+    Type: AWS::EC2::Subnet::Id
+    Description: Database Subnet 1 ID
+  
+  DatabaseSubnet2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Database Subnet 2 ID
+  
+  NeptuneSecurityGroup:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Neptune Security Group ID
+  
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Lambda Security Group ID
+  
+  LambdaExecutionRoleArn:
+    Type: String
+    Description: Lambda Execution Role ARN
+  
+  KMSKeyId:
+    Type: String
+    Description: KMS Key ID for encryption
+  
+  EnableCodeGuru:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Enable CodeGuru for code analysis
+  
+  EnableConfig:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Enable AWS Config for compliance
+  
+  EnableNeptune:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Enable Neptune for AI asset graph
+
+Conditions:
+  EnableCodeGuruCondition: !Equals [!Ref EnableCodeGuru, 'true']
+  EnableConfigCondition: !Equals [!Ref EnableConfig, 'true']
+  EnableNeptuneCondition: !Equals [!Ref EnableNeptune, 'true']
+  IsProduction: !Equals [!Ref Environment, prod]
+
+Resources:
+  # Neptune DB Subnet Group
+  NeptuneDBSubnetGroup:
+    Type: AWS::Neptune::DBSubnetGroup
+    Condition: EnableNeptuneCondition
+    Properties:
+      DBSubnetGroupDescription: Subnet group for AI Trust OS Neptune cluster
+      SubnetIds:
+        - !Ref DatabaseSubnet1
+        - !Ref DatabaseSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub 'ai-trust-os-neptune-subnet-group-${Environment}'
+
+  # Neptune DB Cluster
+  NeptuneDBCluster:
+    Type: AWS::Neptune::DBCluster
+    Condition: EnableNeptuneCondition
+    Properties:
+      DBClusterIdentifier: !Sub 'ai-trust-os-neptune-cluster-${Environment}'
+      Engine: neptune
+      EngineVersion: '1.3.0.0'
+      DBSubnetGroupName: !Ref NeptuneDBSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref NeptuneSecurityGroup
+      IamAuthEnabled: true
+      DeletionProtection: !If [IsProduction, true, false]
+      StorageEncrypted: true
+      KmsKeyId: !Ref KMSKeyId
+      BackupRetentionPeriod: !If [IsProduction, 35, 7]
+      PreferredBackupWindow: 03:00-04:00
+      PreferredMaintenanceWindow: Mon:04:00-Mon:05:00
+      EnableCloudwatchLogsExports:
+        - audit
+        - slowquery
+      Tags:
+        - Key: Name
+          Value: !Sub 'ai-trust-os-neptune-cluster-${Environment}'
+        - Key: Purpose
+          Value: ai-asset-discovery-graph
+
+  # Neptune DB Instance (Writer)
+  NeptuneDBInstance:
+    Type: AWS::Neptune::DBInstance
+    Condition: EnableNeptuneCondition
+    Properties:
+      DBClusterIdentifier: !Ref NeptuneDBCluster
+      DBInstanceIdentifier: !Sub 'ai-trust-os-neptune-${Environment}-1'
+      DBInstanceClass: !If [IsProduction, db.r6g.xlarge, db.t3.medium]
+      Engine: neptune
+      AutoMinorVersionUpgrade: true
+      Tags:
+        - Key: Name
+          Value: !Sub 'ai-trust-os-neptune-instance-${Environment}-1'
+
+  # Neptune DB Instance (Reader - Production only)
+  NeptuneDBInstanceReader:
+    Type: AWS::Neptune::DBInstance
+    Condition: IsProduction
+    Properties:
+      DBClusterIdentifier: !Ref NeptuneDBCluster
+      DBInstanceIdentifier: !Sub 'ai-trust-os-neptune-${Environment}-2'
+      DBInstanceClass: db.r6g.xlarge
+      Engine: neptune
+      AutoMinorVersionUpgrade: true
+      Tags:
+        - Key: Name
+          Value: !Sub 'ai-trust-os-neptune-instance-${Environment}-2'
+
+  # Neptune Cluster Parameter Group
+  NeptuneClusterParameterGroup:
+    Type: AWS::Neptune::DBClusterParameterGroup
+    Condition: EnableNeptuneCondition
+    Properties:
+      Description: Parameter group for AI Trust OS Neptune cluster
+      Family: neptune1.3
+      Parameters:
+        neptune_enable_audit_log: '1'
+        neptune_query_timeout: '120000'
+
+  # Neptune DB Parameter Group
+  NeptuneDBParameterGroup:
+    Type: AWS::Neptune::DBParameterGroup
+    Condition: EnableNeptuneCondition
+    Properties:
+      Description: Parameter group for AI Trust OS Neptune instances
+      Family: neptune1.3
+      Parameters:
+        neptune_slow_query_log: '1'
+
+  # CodeGuru Repository Association
+  CodeGuruRepositoryAssociation:
+    Type: AWS::CodeGuruReviewer::RepositoryAssociation
+    Condition: EnableCodeGuruCondition
+    Properties:
+      Name: ai-trust-os-code-repo
+      Type: CodeCommit
+
+  # CodeGuru Profiling Group
+  CodeGuruProfilingGroup:
+    Type: AWS::CodeGuruProfiler::ProfilingGroup
+    Condition: EnableCodeGuruCondition
+    Properties:
+      ProfilingGroupName: !Sub 'ai-trust-os-lambda-profile-${Environment}'
+      ComputePlatform: AWSLambda
+      Tags:
+        - Key: Name
+          Value: !Sub 'ai-trust-os-profiler-${Environment}'
+
+  # AWS Config Configuration Recorder
+  ConfigConfigurationRecorder:
+    Type: AWS::Config::ConfigurationRecorder
+    Condition: EnableConfigCondition
+    Properties:
+      Name: !Sub 'ai-trust-os-config-recorder-${Environment}'
+      RecordingGroup:
+        AllSupported: false
+        IncludeGlobalResourceTypes: true
+        ResourceTypes:
+          - AWS::Lambda::Function
+          - AWS::IAM::Role
+          - AWS::SageMaker::Endpoint
+          - AWS::Bedrock::Agent
+          - AWS::Bedrock::Guardrail
+          - AWS::S3::Bucket
+          - AWS::EC2::Instance
+      RoleARN: !GetAtt ConfigRole.Arn
+
+  # AWS Config Delivery Channel
+  ConfigDeliveryChannel:
+    Type: AWS::Config::DeliveryChannel
+    Condition: EnableConfigCondition
+    Properties:
+      Name: !Sub 'ai-trust-os-config-channel-${Environment}'
+      S3BucketName: !Ref ConfigS3Bucket
+      ConfigSnapshotDeliveryProperties:
+        DeliveryFrequency: One_Hour
+
+  # Config S3 Bucket
+  ConfigS3Bucket:
+    Type: AWS::S3::Bucket
+    Condition: EnableConfigCondition
+    Properties:
+      BucketName: !Sub 'ai-trust-os-config-${AWS::AccountId}-${Environment}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              KMSMasterKeyID: !Ref KMSKeyId
+              SSEAlgorithm: aws:kms
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+
+  # Config Role
+  ConfigRole:
+    Type: AWS::IAM::Role
+    Condition: EnableConfigCondition
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: config.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSConfigRole
+      Policies:
+        - PolicyName: AITrustOSConfigPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                Resource: !Sub 'arn:aws:s3:::ai-trust-os-config-${AWS::AccountId}-${Environment}/*'
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketAcl
+                Resource: !Sub 'arn:aws:s3:::ai-trust-os-config-${AWS::AccountId}-${Environment}'
+
+  # AWS Config Rules for AI Governance
+  BedrockGuardrailConfigRule:
+    Type: AWS::Config::ConfigRule
+    Condition: EnableConfigCondition
+    Properties:
+      ConfigRuleName: !Sub 'ai-trust-os-bedrock-guardrail-${Environment}'
+      Description: Ensures Bedrock Guardrails are configured
+      Scope:
+        ComplianceResourceTypes:
+          - AWS::Bedrock::Guardrail
+      Source:
+        Owner: AWS
+        SourceIdentifier: REQUIRED_TAGS
+        SourceDetails:
+          - EventSource: aws.config
+            MessageType: ConfigurationItemChangeNotification
+          - EventSource: aws.config
+            MessageType: OversizedConfigurationItemChangeNotification
+
+  LambdaEnvironmentVariablesConfigRule:
+    Type: AWS::Config::ConfigRule
+    Condition: EnableConfigCondition
+    Properties:
+      ConfigRuleName: !Sub 'ai-trust-os-lambda-env-${Environment}'
+      Description: Checks Lambda functions don't have unencrypted env vars with secrets
+      Scope:
+        ComplianceResourceTypes:
+          - AWS::Lambda::Function
+      Source:
+        Owner: CUSTOM_LAMBDA
+        SourceIdentifier: !GetAtt LambdaConfigRuleFunction.Arn
+        SourceDetails:
+          - EventSource: aws.config
+            MessageType: ConfigurationItemChangeNotification
+            MaximumExecutionFrequency: One_Hour
+
+  LambdaConfigRuleFunction:
+    Type: AWS::Lambda::Function
+    Condition: EnableConfigCondition
+    Properties:
+      FunctionName: !Sub 'ai-trust-os-config-rule-lambda-${Environment}'
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !Ref LambdaExecutionRoleArn
+      Timeout: 60
+      MemorySize: 256
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref DatabaseSubnet1
+          - !Ref DatabaseSubnet2
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          KMS_KEY_ID: !Ref KMSKeyId
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          
+          def lambda_handler(event, context):
+              """
+              Custom Config Rule: Check Lambda functions for unencrypted sensitive env vars
+              """
+              result_token = event.get('resultToken', 'NoResultToken')
+              invoking_event = json.loads(event['invokingEvent'])
+              
+              configuration_item = invoking_event.get('configurationItem', {})
+              resource_id = configuration_item.get('resourceId')
+              resource_type = configuration_item.get('resourceType')
+              
+              # Check for sensitive patterns in environment variables
+              env_vars = configuration_item.get('configuration', {}).get('Environment', {}).get('Variables', {})
+              
+              sensitive_patterns = ['password', 'secret', 'key', 'token', 'credential']
+              violations = []
+              
+              for var_name, var_value in env_vars.items():
+                  var_lower = var_name.lower()
+                  if any(pattern in var_lower for pattern in sensitive_patterns):
+                      # Check if value looks like a secret (long, random string)
+                      if len(var_value) > 20 and any(c.isupper() for c in var_value) and any(c.isdigit() for c in var_value):
+                          violations.append(f"Potential unencrypted secret in env var: {var_name}")
+              
+              compliance_type = 'COMPLIANT' if not violations else 'NON_COMPLIANT'
+              annotation = '; '.join(violations) if violations else 'No unencrypted secrets detected'
+              
+              evaluation = {
+                  'ComplianceResourceType': resource_type,
+                  'ComplianceResourceId': resource_id,
+                  'ComplianceType': compliance_type,
+                  'Annotation': annotation,
+                  'OrderingTimestamp': configuration_item.get('configurationItemCaptureTime')
+              }
+              
+              # Submit evaluation to Config
+              config_client = boto3.client('config')
+              config_client.put_evaluations(
+                  Evaluations=[evaluation],
+                  ResultToken=result_token
+              )
+              
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({'compliance': compliance_type, 'violations': violations})
+              }
+
+  # Config Rule Permission
+  ConfigRulePermission:
+    Type: AWS::Lambda::Permission
+    Condition: EnableConfigCondition
+    Properties:
+      FunctionName: !GetAtt LambdaConfigRuleFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+
+  # Lambda Function for Agent Registry Sync (Neptune)
+  AgentRegistrySyncFunction:
+    Type: AWS::Lambda::Function
+    Condition: EnableNeptuneCondition
+    Properties:
+      FunctionName: !Sub 'ai-trust-os-agent-registry-sync-${Environment}'
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !Ref LambdaExecutionRoleArn
+      Timeout: 300
+      MemorySize: 512
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref DatabaseSubnet1
+          - !Ref DatabaseSubnet2
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          NEPTUNE_ENDPOINT: !GetAtt NeptuneDBCluster.Endpoint
+          KMS_KEY_ID: !Ref KMSKeyId
+          GRAPH_DB_NAME: aitrustos_graph
+      Layers:
+        - !Ref AgentRegistrySyncLayer
+
+  # Lambda Layer for Neptune Gremlin client
+  AgentRegistrySyncLayer:
+    Type: AWS::Lambda::LayerVersion
+    Condition: EnableNeptuneCondition
+    Properties:
+      LayerName: !Sub 'ai-trust-os-neptune-gremlin-${Environment}'
+      Description: Gremlin Python client for Neptune
+      Content:
+        S3Bucket: !Sub 'ai-trust-os-lambda-layers-${AWS::Region}'
+        S3Key: gremlinpython-layer.zip
+      CompatibleRuntimes:
+        - python3.11
+      LicenseInfo: Apache-2.0
+
+  # CloudWatch Event Rule for Agent Registry Sync
+  AgentRegistrySyncSchedule:
+    Type: AWS::Events::Rule
+    Condition: EnableNeptuneCondition
+    Properties:
+      Name: !Sub 'ai-trust-os-agent-sync-schedule-${Environment}'
+      Description: Trigger agent registry sync every 5 minutes
+      ScheduleExpression: rate(5 minutes)
+      State: ENABLED
+      Targets:
+        - Id: AgentRegistrySyncTarget
+          Arn: !GetAtt AgentRegistrySyncFunction.Arn
+
+  AgentRegistrySyncPermission:
+    Type: AWS::Lambda::Permission
+    Condition: EnableNeptuneCondition
+    Properties:
+      FunctionName: !GetAtt AgentRegistrySyncFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt AgentRegistrySyncSchedule.Arn
+
+  # IAM Policy for Neptune Access
+  NeptuneAccessPolicy:
+    Type: AWS::IAM::Policy
+    Condition: EnableNeptuneCondition
+    Properties:
+      PolicyName: !Sub 'ai-trust-os-neptune-access-${Environment}'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - neptune-db:connect
+              - neptune-db:ReadDataViaQuery
+              - neptune-db:WriteDataViaQuery
+              - neptune-db:DeleteDataViaQuery
+            Resource:
+              - !GetAtt NeptuneDBCluster.DBClusterArn
+          - Effect: Allow
+            Action:
+              - rds:DescribeDBClusters
+              - rds:DescribeDBInstances
+            Resource: '*'
+      Roles:
+        - !Select [1, !Split ['/', !Ref LambdaExecutionRoleArn]]
+
+  # CloudWatch Log Group for Lambda
+  AgentRegistrySyncLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: EnableNeptuneCondition
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AgentRegistrySyncFunction}'
+      RetentionInDays: 30
+      KmsKeyId: !Ref KMSKeyId
+
+Outputs:
+  NeptuneEndpoint:
+    Description: Neptune Cluster Endpoint
+    Value: !If [EnableNeptuneCondition, !GetAtt NeptuneDBCluster.Endpoint, 'N/A']
+    Export:
+      Name: !Sub 'ai-trust-os-neptune-endpoint-${Environment}'
+  
+  NeptuneReadEndpoint:
+    Description: Neptune Reader Endpoint
+    Value: !If [EnableNeptuneCondition, !GetAtt NeptuneDBCluster.ReadEndpoint, 'N/A']
+    Export:
+      Name: !Sub 'ai-trust-os-neptune-read-endpoint-${Environment}'
+  
+  NeptuneClusterArn:
+    Description: Neptune Cluster ARN
+    Value: !If [EnableNeptuneCondition, !GetAtt NeptuneDBCluster.DBClusterArn, 'N/A']
+    Export:
+      Name: !Sub 'ai-trust-os-neptune-arn-${Environment}'
+  
+  CodeGuruProfilingGroupName:
+    Description: CodeGuru Profiling Group
+    Value: !If [EnableCodeGuruCondition, !Ref CodeGuruProfilingGroup, 'N/A']
+    Export:
+      Name: !Sub 'ai-trust-os-codeguru-profile-${Environment}'
+  
+  ConfigRecorderName:
+    Description: Config Recorder Name
+    Value: !If [EnableConfigCondition, !Ref ConfigConfigurationRecorder, 'N/A']
+    Export:
+      Name: !Sub 'ai-trust-os-config-recorder-${Environment}'
+  
+  AgentRegistrySyncFunctionArn:
+    Description: Agent Registry Sync Lambda ARN
+    Value: !If [EnableNeptuneCondition, !GetAtt AgentRegistrySyncFunction.Arn, 'N/A']
+    Export:
+      Name: !Sub 'ai-trust-os-agent-sync-lambda-${Environment}'

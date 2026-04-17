@@ -1,0 +1,342 @@
+RulesPackage:
+  Name: AI-Trust-OS-Bedrock-Compliance
+  Description: AWS Config rules for Bedrock governance and compliance
+  Scope:
+    ComplianceResourceTypes:
+      - AWS::Bedrock::Guardrail
+      - AWS::Bedrock::ModelInvocationJob
+      - AWS::Bedrock::Agent
+      - AWS::Lambda::Function
+      - AWS::IAM::Role
+      - AWS::KMS::Key
+      - AWS::S3::Bucket
+      - AWS::CloudWatch::Alarm
+      - AWS::CloudTrail::Trail
+  
+ConfigRules:
+  # Rule 1: Bedrock Guardrail Configuration
+  - ConfigRuleName: bedrock-guardrail-configured
+    Description: Ensures Bedrock Guardrails are configured and enabled
+    Source:
+      Owner: AWS
+      SourceIdentifier: REQUIRED_TAGS
+    InputParameters:
+      tag1Key: GuardrailEnabled
+      tag1Value: 'true'
+    ComplianceResourceTypes:
+      - AWS::Bedrock::Guardrail
+    MaximumExecutionFrequency: TwentyFour_Hours
+    
+  # Rule 2: Guardrail Tagging
+  - ConfigRuleName: bedrock-guardrail-tags
+    Description: Ensures Bedrock Guardrails have required tags
+    Source:
+      Owner: AWS
+      SourceIdentifier: REQUIRED_TAGS
+    InputParameters:
+      tag1Key: Environment
+      tag2Key: Owner
+      tag3Key: CostCenter
+    ComplianceResourceTypes:
+      - AWS::Bedrock::Guardrail
+    MaximumExecutionFrequency: TwentyFour_Hours
+    
+  # Rule 3: Bedrock Model Access Logging
+  - ConfigRuleName: bedrock-model-logging-enabled
+    Description: Ensures CloudWatch logging is enabled for Bedrock model invocations
+    Source:
+      Owner: CUSTOM_LAMBDA
+      LambdaFunctionName: ai-trust-os-config-bedrock-logging
+    InputParameters:
+      logGroupPattern: /aws/bedrock/
+    ComplianceResourceTypes:
+      - AWS::CloudWatch::LogGroup
+    MaximumExecutionFrequency: One_Hour
+    
+  # Rule 4: Lambda Environment Variable Encryption
+  - ConfigRuleName: lambda-env-vars-encrypted
+    Description: Ensures Lambda environment variables with sensitive patterns are encrypted
+    Source:
+      Owner: CUSTOM_LAMBDA
+      LambdaFunctionName: ai-trust-os-config-lambda-env
+    InputParameters:
+      encryptedPatterns: 'API_KEY,SECRET,PASSWORD,TOKEN'
+      kmsKeyRequired: 'true'
+    ComplianceResourceTypes:
+      - AWS::Lambda::Function
+    MaximumExecutionFrequency: One_Hour
+    
+  # Rule 5: Lambda VPC Configuration
+  - ConfigRuleName: lambda-vpc-configured
+    Description: Ensures Lambda functions are deployed in VPC with security groups
+    Source:
+      Owner: CUSTOM_LAMBDA
+      LambdaFunctionName: ai-trust-os-config-lambda-vpc
+    ComplianceResourceTypes:
+      - AWS::Lambda::Function
+    MaximumExecutionFrequency: One_Hour
+    
+  # Rule 6: IAM Role Least Privilege
+  - ConfigRuleName: iam-role-least-privilege
+    Description: Ensures IAM roles follow least privilege principles
+    Source:
+      Owner: AWS
+      SourceIdentifier: IAM_POLICY_NO_STATEMENTS_WITH_ADMIN_ACCESS
+    ComplianceResourceTypes:
+      - AWS::IAM::Role
+    MaximumExecutionFrequency: TwentyFour_Hours
+    
+  # Rule 7: KMS Key Rotation
+  - ConfigRuleName: kms-key-rotation-enabled
+    Description: Ensures KMS key rotation is enabled for all AI Trust OS keys
+    Source:
+      Owner: AWS
+      SourceIdentifier: KMS_KEY_ROTATION_ENABLED
+    ComplianceResourceTypes:
+      - AWS::KMS::Key
+    MaximumExecutionFrequency: TwentyFour_Hours
+    
+  # Rule 8: S3 Bucket Encryption
+  - ConfigRuleName: s3-bucket-encryption
+    Description: Ensures S3 buckets have default encryption enabled
+    Source:
+      Owner: AWS
+      SourceIdentifier: S3_BUCKET_SERVER_SIDE_ENCRYPTION_ENABLED
+    ComplianceResourceTypes:
+      - AWS::S3::Bucket
+    MaximumExecutionFrequency: TwentyFour_Hours
+    
+  # Rule 9: S3 Bucket Public Access
+  - ConfigRuleName: s3-bucket-public-access-prohibited
+    Description: Ensures S3 buckets are not publicly accessible
+    Source:
+      Owner: AWS
+      SourceIdentifier: S3_BUCKET_PUBLIC_READ_PROHIBITED
+    ComplianceResourceTypes:
+      - AWS::S3::Bucket
+    MaximumExecutionFrequency: TwentyFour_Hours
+    
+  # Rule 10: CloudTrail Enabled
+  - ConfigRuleName: cloudtrail-enabled
+    Description: Ensures CloudTrail is enabled for AI Trust OS account
+    Source:
+      Owner: AWS
+      SourceIdentifier: CLOUD_TRAIL_ENABLED
+    InputParameters:
+      s3BucketName: ai-trust-os-cloudtrail-
+    MaximumExecutionFrequency: TwentyFour_Hours
+    
+  # Rule 11: CloudTrail Log File Validation
+  - ConfigRuleName: cloudtrail-log-file-validation
+    Description: Ensures CloudTrail log file validation is enabled
+    Source:
+      Owner: AWS
+      SourceIdentifier: CLOUD_TRAIL_LOG_FILE_VALIDATION_ENABLED
+    MaximumExecutionFrequency: TwentyFour_Hours
+    
+  # Rule 12: VPC Flow Logs Enabled
+  - ConfigRuleName: vpc-flow-logs-enabled
+    Description: Ensures VPC Flow Logs are enabled for AI Trust OS VPC
+    Source:
+      Owner: AWS
+      SourceIdentifier: VPC_FLOW_LOGS_ENABLED
+    InputParameters:
+      trafficType: ALL
+    ComplianceResourceTypes:
+      - AWS::EC2::VPC
+    MaximumExecutionFrequency: TwentyFour_Hours
+    
+  # Rule 13: Neptune Encryption
+  - ConfigRuleName: neptune-encryption-enabled
+    Description: Ensures Neptune clusters have encryption enabled
+    Source:
+      Owner: CUSTOM_LAMBDA
+      LambdaFunctionName: ai-trust-os-config-neptune-encryption
+    ComplianceResourceTypes:
+      - AWS::Neptune::DBCluster
+    MaximumExecutionFrequency: TwentyFour_Hours
+    
+  # Rule 14: Neptune Backup Retention
+  - ConfigRuleName: neptune-backup-retention
+    Description: Ensures Neptune clusters have adequate backup retention
+    Source:
+      Owner: CUSTOM_LAMBDA
+      LambdaFunctionName: ai-trust-os-config-neptune-backup
+    InputParameters:
+      minimumRetentionDays: '7'
+    ComplianceResourceTypes:
+      - AWS::Neptune::DBCluster
+    MaximumExecutionFrequency: TwentyFour_Hours
+    
+  # Rule 15: OpenSearch Encryption
+  - ConfigRuleName: opensearch-encryption-enabled
+    Description: Ensures OpenSearch domains have encryption at rest enabled
+    Source:
+      Owner: CUSTOM_LAMBDA
+      LambdaFunctionName: ai-trust-os-config-opensearch-encryption
+    ComplianceResourceTypes:
+      - AWS::OpenSearchService::Domain
+    MaximumExecutionFrequency: TwentyFour_Hours
+    
+  # Rule 16: OpenSearch Node-to-Node Encryption
+  - ConfigRuleName: opensearch-node-encryption
+    Description: Ensures OpenSearch has node-to-node encryption enabled
+    Source:
+      Owner: CUSTOM_LAMBDA
+      LambdaFunctionName: ai-trust-os-config-opensearch-node-encryption
+    ComplianceResourceTypes:
+      - AWS::OpenSearchService::Domain
+    MaximumExecutionFrequency: TwentyFour_Hours
+    
+  # Rule 17: VPC Endpoint Policy
+  - ConfigRuleName: vpc-endpoint-policy
+    Description: Ensures VPC endpoints have appropriate policies
+    Source:
+      Owner: CUSTOM_LAMBDA
+      LambdaFunctionName: ai-trust-os-config-vpc-endpoint
+    ComplianceResourceTypes:
+      - AWS::EC2::VPCEndpoint
+    MaximumExecutionFrequency: TwentyFour_Hours
+    
+  # Rule 18: Security Group Open Access
+  - ConfigRuleName: restricted-ssh
+    Description: Ensures security groups do not allow unrestricted SSH access
+    Source:
+      Owner: AWS
+      SourceIdentifier: INCOMING_SSH_DISABLED
+    ComplianceResourceTypes:
+      - AWS::EC2::SecurityGroup
+    MaximumExecutionFrequency: TwentyFour_Hours
+    
+  # Rule 19: GuardDuty Enabled
+  - ConfigRuleName: guardduty-enabled-centralized
+    Description: Ensures GuardDuty is enabled for threat detection
+    Source:
+      Owner: AWS
+      SourceIdentifier: GUARDDUTY_ENABLED_CENTRALIZED
+    MaximumExecutionFrequency: TwentyFour_Hours
+    
+  # Rule 20: IAM Password Policy
+  - ConfigRuleName: iam-password-policy
+    Description: Ensures IAM password policy meets security requirements
+    Source:
+      Owner: AWS
+      SourceIdentifier: IAM_PASSWORD_POLICY
+    InputParameters:
+      RequireUppercaseCharacters: 'true'
+      RequireLowercaseCharacters: 'true'
+      RequireNumbers: 'true'
+      RequireSymbols: 'true'
+      MinimumPasswordLength: '12'
+      PasswordReusePrevention: '24'
+      MaxPasswordAge: '90'
+    MaximumExecutionFrequency: TwentyFour_Hours
+
+# Custom Lambda Functions for Config Rules
+LambdaFunctions:
+  - FunctionName: ai-trust-os-config-bedrock-logging
+    Runtime: python3.11
+    Handler: index.lambda_handler
+    Timeout: 60
+    Code: |
+      import json
+      import boto3
+      
+      def lambda_handler(event, context):
+          cloudwatch = boto3.client('cloudwatch')
+          
+          # Check for Bedrock log groups
+          log_groups = cloudwatch.describe_log_groups(
+              logGroupNamePrefix='/aws/bedrock/'
+          )
+          
+          compliance_type = 'COMPLIANT' if log_groups['logGroups'] else 'NON_COMPLIANT'
+          
+          return {
+              'compliance_type': compliance_type,
+              'annotation': f"Found {len(log_groups['logGroups'])} Bedrock log groups"
+          }
+  
+  - FunctionName: ai-trust-os-config-lambda-env
+    Runtime: python3.11
+    Handler: index.lambda_handler
+    Timeout: 60
+    Code: |
+      import json
+      import boto3
+      import re
+      
+      def lambda_handler(event, context):
+          lambda_client = boto3.client('lambda')
+          kms = boto3.client('kms')
+          
+          function_name = event['invokingEvent']['configurationItem']['resourceId']
+          
+          try:
+              response = lambda_client.get_function_configuration(
+                  FunctionName=function_name
+              )
+              
+              env_vars = response.get('Environment', {}).get('Variables', {})
+              kms_key = response.get('KMSKeyArn')
+              
+              sensitive_patterns = ['API_KEY', 'SECRET', 'PASSWORD', 'TOKEN']
+              has_sensitive = any(
+                  any(p in k.upper() for p in sensitive_patterns)
+                  for k in env_vars.keys()
+              )
+              
+              if has_sensitive and not kms_key:
+                  return {
+                      'compliance_type': 'NON_COMPLIANT',
+                      'annotation': 'Sensitive env vars without KMS encryption'
+                  }
+              
+              return {
+                  'compliance_type': 'COMPLIANT',
+                  'annotation': 'Environment variables properly secured'
+              }
+              
+          except Exception as e:
+              return {
+                  'compliance_type': 'NOT_APPLICABLE',
+                  'annotation': str(e)
+              }
+  
+  - FunctionName: ai-trust-os-config-neptune-encryption
+    Runtime: python3.11
+    Handler: index.lambda_handler
+    Timeout: 60
+    Code: |
+      import json
+      import boto3
+      
+      def lambda_handler(event, context):
+          configuration_item = event['invokingEvent']['configurationItem']
+          
+          storage_encrypted = configuration_item.get('configuration', {}).get('storageEncrypted', False)
+          
+          compliance_type = 'COMPLIANT' if storage_encrypted else 'NON_COMPLIANT'
+          
+          return {
+              'compliance_type': compliance_type,
+              'annotation': 'Encryption at rest enabled' if storage_encrypted else 'Encryption at rest not enabled'
+          }
+
+# Remediation Actions
+RemediationActions:
+  - RuleName: s3-bucket-encryption
+    Action: AUTORemediation
+    TargetType: S3_BUCKET
+    TargetId: AWSConfigRemediation-EnableS3BucketDefaultEncryption
+    Parameters:
+      SSEAlgorithm: aws:kms
+
+  - RuleName: kms-key-rotation-enabled
+    Action: AUTORemediation
+    TargetType: KMS_KEY
+    TargetId: AWSConfigRemediation-EnableKMSKeyRotation
+
+  - RuleName: vpc-flow-logs-enabled
+    Action: MANUALRemediation
+    NotificationTopic: ai-trust-os-compliance
