@@ -4,6 +4,8 @@
 
 The **AI Trust OS Quick Start** is a production-ready infrastructure framework for governing AI workloads on AWS. Built on Amazon Bedrock, it provides comprehensive security, compliance, and observability for enterprise AI deployments.
 
+It is inspired by this research: AI Trust OS -- A Continuous Governance Framework for Autonomous AI Observability and Zero-Trust Compliance in Enterprise Environments - https://arxiv.org/abs/2604.04749
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     AI Trust OS Quick Start                       │
